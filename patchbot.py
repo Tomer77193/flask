@@ -1,82 +1,118 @@
 # --- patchbot.py (robust) ---------------------------------------
-import os, re, subprocess, requests
+import os
+import re
+import subprocess
+import requests
+import json
+import sys
+from pathlib import Path
 from github import Github
 
-OWNER = "Tomer77193"          # your GitHub username
-REPO  = "vuln-demo"           # repo name
+OWNER = "Tomer77193"          # ← your GitHub username
+REPO  = "vuln-demo"           # ← your repo name
 
-GH_TOKEN = os.environ["GH_TOKEN"]          # set in CMD with:  set GH_TOKEN=ghp_...
-g   = Github(GH_TOKEN)
-rep = g.get_repo(f"{OWNER}/{REPO}")
+GH_TOKEN = os.environ["GH_TOKEN"]
+g        = Github(GH_TOKEN)
+rep      = g.get_repo(f"{OWNER}/{REPO}")
 
-# ---------------------------------------------------------------
+# 1. Fetch all open Dependabot alerts
 alerts = requests.get(
     f"https://api.github.com/repos/{OWNER}/{REPO}/dependabot/alerts",
     headers={
         "Authorization": f"Bearer {GH_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }).json()
+        "Accept":        "application/vnd.github+json"
+    }
+).json()
 
 if not alerts:
-    raise SystemExit("No open Dependabot alerts found")
+    sys.exit("No open Dependabot alerts found")
 
-alert = alerts[0]
-pkg   = alert["dependency"]["package"]["name"]
-adv   = alert["security_advisory"]
-
+# Helper to pull the “safe” (patched) version out of the advisory
 def extract_safe_version(advisory: dict) -> str | None:
-    # 1) Preferred: top‑level first_patched_version
+    # 1) Top‑level first_patched_version
     fpv = advisory.get("first_patched_version", {})
     if isinstance(fpv, dict) and fpv.get("identifier"):
         return fpv["identifier"]
-
     # 2) Nested vulnerabilities list
     for vuln in advisory.get("vulnerabilities", []):
         id_ = vuln.get("first_patched_version", {}).get("identifier")
         if id_:
             return id_
-
-    # 3) Parse from vulnerable_version_range / vulnerable_versions
+    # 3) Fallback parse on the “< version” string
     rng = (advisory.get("vulnerable_versions") or
            advisory.get("vulnerable_version_range") or "")
-    match = re.search(r"<\s*([0-9A-Za-z][0-9A-Za-z.\-]*)", rng)
-    if match:
-        return match.group(1)
+    m = re.search(r"<\s*([0-9A-Za-z][0-9A-Za-z.\-]*)", rng)
+    return m.group(1) if m else None
 
-    return None
+# 2. Loop through each alert and create a PR for it
+for alert in alerts:
+    pkg      = alert["dependency"]["package"]["name"]
+    adv      = alert["security_advisory"]
+    manifest = alert["dependency"]["manifest_path"]  # e.g. "requirements.txt" or "package.json"
 
-safe = extract_safe_version(adv)
-if not safe:
-    raise ValueError("Could not find safe version in advisory JSON")
+    safe = extract_safe_version(adv)
+    if not safe:
+        print(f"⚠️  No patched version found for {pkg}, skipping")
+        continue
 
-print(f"Need to bump {pkg} → {safe}")
+    print(f"▶️  Fixing {pkg} → {safe} in {manifest}")
+
+    path = Path(manifest)
+    if not path.exists():
+        print(f"⚠️  Manifest {manifest!r} not found, skipping")
+        continue
+
+    # 2a. Python requirements.txt
+    if manifest.endswith(".txt"):
+        text = path.read_text(encoding="utf-8")
+        text = re.sub(rf"{pkg}==[0-9A-Za-z.\-]+", f"{pkg}=={safe}", text)
+        path.write_text(text, encoding="utf-8")
+
+    # 2b. JavaScript package.json
+    elif manifest.endswith(".json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        changed = False
+        for sec in ("dependencies", "devDependencies"):
+            if sec in data and pkg in data[sec]:
+                data[sec][pkg] = safe
+                changed = True
+        if not changed:
+            print(f"⚠️  {pkg} not in {manifest}, skipping")
+            continue
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    else:
+        print(f"⚠️  Unsupported manifest type: {manifest}, skipping")
+        continue
+
+    # 3. Commit & push a new branch
+    branch = f"patchbot/{pkg}-{safe}"
+    subprocess.check_call(["git", "checkout", "-B", branch])
+
+    # tell Git who the CI bot is
+    subprocess.check_call([
+        "git", "config", "--global",
+        "user.email", "patchbot@users.noreply.github.com"
+    ])
+    subprocess.check_call([
+        "git", "config", "--global",
+        "user.name", "Patch‑Bot"
+    ])
+
+    # stage exactly the file we updated
+    subprocess.check_call(["git", "add", manifest])
+    subprocess.check_call([
+        "git", "commit", "-m",
+        f"chore: bump {pkg} to {safe}"
+    ])
+    subprocess.check_call(["git", "push", "-u", "origin", branch])
+
+    # 4. Open the pull request on GitHub
+    pr = rep.create_pull(
+        title=f"chore: bump {pkg} to {safe}",
+        body="Automated fix by **Patch‑Bot**",
+        head=branch,
+        base="main"
+    )
+    print("✅ Pull‑request created:", pr.html_url)
 # ---------------------------------------------------------------
-
-# 2. Update requirements.txt
-path = Path(manifest)
-if not path.exists():
-    print(f"⚠️  Manifest {manifest!r} not found, skipping")
-    continue
-
-if manifest.endswith(".txt"):
-    with path.open("r+", encoding="utf-8") as f:
-        …
-elif manifest.endswith(".json"):
-    …
-else:
-    …
-
-
-# 3. Commit & push a new branch
-branch = f"patchbot/{pkg}-{safe}"
-subprocess.check_call(["git", "checkout", "-B", branch])
-# configure CI identity
-subprocess.check_call(["git", "config", "--global", "user.email", "patchbot@users.noreply.github.com"])
-subprocess.check_call(["git", "config", "--global", "user.name",  "Patch‑Bot"])
-# add exactly the file Dependabot flagged
-subprocess.check_call(["git", "add", manifest])
-subprocess.check_call(["git", "commit", "-m", f"chore: bump {pkg} to {safe}"])
-subprocess.check_call(["git", "push", "-u", "origin", branch"])
-
-# 4. Open the pull request
-pr = rep.create_pull

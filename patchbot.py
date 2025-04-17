@@ -53,17 +53,30 @@ print(f"Need to bump {pkg} → {safe}")
 # ---------------------------------------------------------------
 
 # 2. Update requirements.txt
-with open("requirements.txt", "r+", encoding="utf-8") as f:
-    text = f.read()
-    text = re.sub(rf"{pkg}==[0-9A-Za-z.\-]+", f"{pkg}=={safe}", text)
-    f.seek(0); f.write(text); f.truncate()
+path = Path(manifest)
+if not path.exists():
+    print(f"⚠️  Manifest {manifest!r} not found, skipping")
+    continue
+
+if manifest.endswith(".txt"):
+    with path.open("r+", encoding="utf-8") as f:
+        …
+elif manifest.endswith(".json"):
+    …
+else:
+    …
+
 
 # 3. Commit & push a new branch
 branch = f"patchbot/{pkg}-{safe}"
 subprocess.check_call(["git", "checkout", "-B", branch])
-subprocess.check_call(["git", "add", "requirements.txt"])
+# configure CI identity
+subprocess.check_call(["git", "config", "--global", "user.email", "patchbot@users.noreply.github.com"])
+subprocess.check_call(["git", "config", "--global", "user.name",  "Patch‑Bot"])
+# add exactly the file Dependabot flagged
+subprocess.check_call(["git", "add", manifest])
 subprocess.check_call(["git", "commit", "-m", f"chore: bump {pkg} to {safe}"])
-subprocess.check_call(["git", "push", "-u", "origin", branch])
+subprocess.check_call(["git", "push", "-u", "origin", branch"])
 
 # 4. Open the pull request
 pr = rep.create_pull

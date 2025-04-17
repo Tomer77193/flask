@@ -9,7 +9,7 @@ from pathlib import Path
 from github import Github
 
 OWNER = "Tomer77193"          # ← your GitHub username
-REPO  = "vuln-demo"           # ← your repo name
+REPO  = "flask"          # ← your repo name
 
 GH_TOKEN = os.environ["GH_TOKEN"]
 g        = Github(GH_TOKEN)

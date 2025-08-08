@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Detection Result</title>
+<h1>Detected Access Points</h1>
+<img src="/results/{{ image }}" alt="result image">
+<p>{{ boxes|length }} potential access points found.</p>
+<ul>
+{% for x, y, w, h in boxes %}
+  <li>x={{x}}, y={{y}}, w={{w}}, h={{h}}</li>
+{% endfor %}
+</ul>
+<a href="/">Upload another</a>
